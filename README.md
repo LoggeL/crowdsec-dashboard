@@ -1,21 +1,31 @@
 # CrowdSec Defense Grid
 
-Ein selbst gehostetes Live-Dashboard für [CrowdSec](https://www.crowdsec.net/) im Stil eines Hacker-Terminals mit Röhrenmonitor-Optik: Phosphorgrün, Scanlines, Boot-Sequenz und Radar. Der Fokus bleibt auf lesbaren Zahlen und schnellem Filtern.
+Ein selbst gehostetes Live-Dashboard für [CrowdSec](https://www.crowdsec.net/) im Stil eines Hacker-Terminals mit Röhrenmonitor-Optik: Phosphorgrün, Scanlines, Boot-Sequenz und ein drehbarer 3D-Globus mit Angriffsbögen. Der Fokus bleibt auf lesbaren Zahlen und schnellem Filtern.
 
 ![Screenshot des Dashboards im Demo-Modus](docs/screenshot.png)
 
 ## Funktionen
 
 - **THREATCON-Anzeige**: Alerts der letzten Stunde im Vergleich zum Durchschnitt im Zeitraum (Stufe 5 = ruhig bis 1 = kritisch)
-- **Radar**: Herkunftsländer nach Peilung und Entfernung vom eigenen Server (azimutabstandstreu, Standort per `HOME_LAT`/`HOME_LON`)
+- **3D-Globus**: jede Angreifer-IP per Geolocation verortet, Bögen zum eigenen Server (`HOME_LAT`/`HOME_LON`), drehbar per Maus, Touch oder Pfeiltasten, Klick setzt den Länderfilter
 - **Alerts über Zeit**: 24 h / 7 Tage / 30 Tage, mit Tooltip und Tabellenansicht
 - **Live-Feed**: `tail -f`-Ansicht der neuesten Alerts; neue Einträge leuchten auf
 - **Top-Szenarien, -Länder und -Netze (AS)**: Ein Klick setzt den Filter (Kreuzfilter, alle Panels reagieren)
 - **Schutzschild**: aktive Sperren nach Herkunft (lokal, cscli, Community/CAPI, Blocklisten)
 - **Tabellen** für Alerts und aktive lokale Sperren mit Restlaufzeit
-- Tastatur: `/` Suche · `R` Sync · `1` `2` `3` Zeitraum · `Esc` Filter löschen
-- CRT-Effekte abschaltbar; bei `prefers-reduced-motion` gibt es keine Animationen
+- Tastatur: `/` Suche · Globus: Pfeiltasten drehen, `H` richtet auf den eigenen Server aus · `R` Sync · `1` `2` `3` Zeitraum · `Esc` Filter löschen
+- CRT-Effekte und Globus-Rotation abschaltbar; bei `prefers-reduced-motion` gibt es keine Animationen
 - Keine Abhängigkeiten: Python-Standardbibliothek plus Vanilla JS, keine CDNs, strikte CSP
+
+## Geo-Coding der IPs
+
+1. **CrowdSec selbst** (Standard): Die Anreicherung `crowdsecurity/geoip-enrich` schreibt aus der GeoLite2-City-Datenbank Breiten- und Längengrad in jeden Alert (`source.latitude`/`source.longitude`). Das Dashboard übernimmt diese Werte. Es fließen keine Daten nach außen.
+2. **Optionaler Fallback** `GEO_FALLBACK=ipapi`: IPs ohne Koordinaten werden über `ip-api.com` nachgeschlagen (Batch, gecacht, höchstens 300 IPs pro Abruf). **Achtung:** Dabei gehen Angreifer-IPs an einen Drittanbieter, und die kostenlose Variante ist nur für nicht-kommerzielle Nutzung gedacht.
+3. **Letzte Stufe**: der Mittelpunkt des Landes. Der Globus weist diese Punkte als „nur Landesmitte“ aus.
+
+Nahe beieinanderliegende IPs (Raster von etwa 50 km, also meist dasselbe Rechenzentrum oder dieselbe Stadt) werden zu einem Punkt zusammengefasst. Die Punktgröße steht für die Zahl der Alerts. Leuchtende, pulsierende Punkte waren in der letzten Stunde aktiv. Die Bögen führen von den 45 aktivsten Standorten zum eigenen Server.
+
+Geolocation-Daten geben den Standort des Netzes an, nicht den der Person dahinter: Bei VPNs und Cloud-Servern ist es das Rechenzentrum.
 
 ## Architektur
 
@@ -69,7 +79,8 @@ chmod 600 .env
 | `LAPI_INSECURE_TLS` | Zertifikatsprüfung für HTTPS-LAPI abschalten | `false` |
 | `LISTEN_HOST` / `LISTEN_PORT` | Adresse des Dashboards | `127.0.0.1` / `3000` |
 | `DASHBOARD_USER` / `DASHBOARD_PASSWORD` | Basic-Auth (aktiv, sobald ein Passwort gesetzt ist) | `admin` / – |
-| `HOME_LAT` / `HOME_LON` / `HOME_LABEL` | Standort im Radar-Zentrum | Frankfurt |
+| `HOME_LAT` / `HOME_LON` / `HOME_LABEL` | Standort des eigenen Servers auf dem Globus | Frankfurt |
+| `GEO_FALLBACK` | `ipapi` = fehlende Koordinaten über ip-api.com ergänzen | aus |
 | `ALERT_LIMIT` | max. Alerts pro Abruf | `5000` |
 | `CACHE_TTL` | Cache in Sekunden (schont die LAPI) | `20` |
 | `DEMO` | Demo-Daten statt LAPI | `false` |
@@ -121,3 +132,5 @@ crowdsec.example.com {
 ## Lizenz
 
 MIT, siehe [LICENSE](LICENSE). Kein offizielles Projekt von CrowdSec.
+
+Landmassen: [Natural Earth](https://www.naturalearthdata.com/) 1:110m (gemeinfrei) über [world-atlas](https://github.com/topojson/world-atlas), umgerechnet in ein Punktraster (`static/land.json`).

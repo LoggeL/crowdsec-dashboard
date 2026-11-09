@@ -61,11 +61,14 @@ function fmtDur(sec) {
   if (hh) return `${hh} h ${pad(m)} min`;
   return `${Math.max(m, 1)} min`;
 }
+/** Achsen-Maximum, dessen Viertel ganze, runde Zahlen sind (0 / 5 / 10 / 15 / 20). */
 function niceMax(v) {
-  if (v <= 4) return 4;
-  const p = 10 ** Math.floor(Math.log10(v));
-  for (const m of [1, 2, 2.5, 5, 10]) if (m * p >= v) return m * p;
-  return 10 * p;
+  const raw = Math.max(1, v / 4), p = 10 ** Math.floor(Math.log10(raw));
+  for (const m of [1, 2, 2.5, 5, 10]) {
+    const step = m * p;
+    if (step >= raw && Number.isInteger(step)) return step * 4;
+  }
+  return 40 * p;
 }
 const ORIGINS = {
   crowdsec: { label: "Lokal erkannt", cls: "crowdsec" },
@@ -75,7 +78,7 @@ const ORIGINS = {
 };
 const originInfo = (o) => ORIGINS[o] || { label: o || "Sonstige", cls: "other" };
 
-// Ungefähre Schwerpunkte (Breite, Länge) – genug für die Radar-Peilung.
+// Ungefähre Landesmitten (Breite, Länge) – Fallback, wenn eine IP keine Koordinaten hat.
 const CENTROIDS = {
   AE:[24,54],AF:[33,65],AL:[41,20],AM:[40,45],AO:[-12.5,18.5],AR:[-34,-64],AT:[47.5,14.5],AU:[-25,134],AZ:[40.5,47.5],BA:[44,17.8],
   BD:[24,90],BE:[50.8,4.5],BG:[42.7,25.3],BH:[26,50.5],BN:[4.5,114.7],BO:[-17,-65],BR:[-10,-52],BW:[-22,24],BY:[53.7,28],BZ:[17.2,-88.7],
@@ -215,7 +218,7 @@ function render() {
   renderThreat();
   renderKpis(alerts);
   renderTimeline(alerts);
-  renderRadar(filterAlerts("country"));
+  renderGlobe(filterAlerts("country"));
   renderLog(alerts);
   renderBars($("top-scenarios"), countBy(filterAlerts("scenario"), (a) => a.scenario).slice(0, 8), {
     name: shortScenario, title: (k) => k, active: (k) => k === state.f.scenario,
@@ -367,80 +370,74 @@ function renderTimeline(alerts) {
     h("tbody", {}, rows.map(([l, c]) => h("tr", {}, h("td", { text: l }), h("td", { class: "num", text: fmt(c) })))))));
 }
 
-// --- Radar: azimutabstandstreue Peilung vom eigenen Standort
-function bearingDistance(home, lat, lon) {
-  const r = Math.PI / 180, p1 = home.lat * r, p2 = lat * r, dl = (lon - home.lon) * r;
-  const brg = Math.atan2(Math.sin(dl) * Math.cos(p2), Math.cos(p1) * Math.sin(p2) - Math.sin(p1) * Math.cos(p2) * Math.cos(dl));
-  const a = Math.sin((p2 - p1) / 2) ** 2 + Math.cos(p1) * Math.cos(p2) * Math.sin(dl / 2) ** 2;
-  return { brg, km: 2 * 6371 * Math.asin(Math.min(1, Math.sqrt(a))) };
+// --- Globus: Angriffsorte per IP-Geolocation, Bögen zum eigenen Server
+function distanceKm(a, b) {
+  const r = Math.PI / 180, p1 = a.lat * r, p2 = b.lat * r, dl = (b.lon - a.lon) * r;
+  const h = Math.sin((p2 - p1) / 2) ** 2 + Math.cos(p1) * Math.cos(p2) * Math.sin(dl / 2) ** 2;
+  return 2 * 6371 * Math.asin(Math.min(1, Math.sqrt(h)));
 }
-function renderRadar(alerts) {
-  const d = state.data, box = $("radar");
-  const S = Math.max(260, Math.min(box.clientWidth, 640));
-  const R = S / 2 - 26, MAXKM = 20000;
-  const rr = (km) => Math.sqrt(Math.min(km, MAXKM) / MAXKM) * R;
-  const now = Date.parse(d.generated_at);
-  const svg = s("svg", { viewBox: `${-S / 2} ${-S / 2} ${S} ${S}`, role: "img", "aria-label": "Radar der Angriffsherkunft nach Richtung und Entfernung" });
-  const defs = s("defs", {},
-    s("radialGradient", { id: "radar-grad" }, s("stop", { offset: "0%", "stop-color": "#0d2416" }), s("stop", { offset: "100%", "stop-color": "#040a06" })),
-    s("linearGradient", { id: "sweep-grad", gradientUnits: "userSpaceOnUse", x1: -R * 0.64, y1: -R * 0.55, x2: 0, y2: -R },
-      s("stop", { offset: "0%", "stop-color": "#3ee07f", "stop-opacity": "0" }), s("stop", { offset: "100%", "stop-color": "#3ee07f", "stop-opacity": "0.28" })));
-  svg.append(defs, s("circle", { class: "r-bg", r: R }));
-  for (let deg = 0; deg < 360; deg += 30) {
-    const a = (deg * Math.PI) / 180;
-    svg.append(s("line", { class: "r-spoke", x1: 0, y1: 0, x2: R * Math.sin(a), y2: -R * Math.cos(a) }));
-  }
-  for (const km of [1000, 2500, 5000, 10000, 20000]) {
-    svg.append(s("circle", { class: `r-ring${km === 20000 ? " outer" : ""}`, r: rr(km) }));
-    if (km < 20000) svg.append(s("text", { class: "r-label", x: 4, y: -rr(km) - 3, text: `${fmt(km)} km` }));
-  }
-  for (const [lbl, deg] of [["N", 0], ["O", 90], ["S", 180], ["W", 270]]) {
-    const a = (deg * Math.PI) / 180;
-    svg.append(s("text", { class: "r-cardinal", x: (R + 14) * Math.sin(a), y: -(R + 14) * Math.cos(a) + 4, "text-anchor": "middle", text: lbl }));
-  }
-  if (!REDUCED_MOTION) {
-    const a0 = (-40 * Math.PI) / 180;
-    svg.append(s("g", { class: "r-sweep" },
-      s("path", { d: `M0,0 L${R * Math.sin(a0)},${-R * Math.cos(a0)} A${R},${R} 0 0 1 0,${-R} Z`, fill: "url(#sweep-grad)" }),
-      s("line", { x1: 0, y1: 0, x2: 0, y2: -R, stroke: "#3ee07f", "stroke-width": 1.5, "stroke-opacity": 0.8 })));
-  }
-
-  // Länder aggregieren
-  const byCn = new Map();
+let globe = null;
+function clusterAlerts(alerts) {
+  const now = Date.parse(state.data.generated_at);
+  const map = new Map();
+  let approx = 0, none = 0;
   for (const a of alerts) {
-    let e = byCn.get(a.cn);
-    if (!e) byCn.set(a.cn, (e = { n: 0, ips: new Set(), hot: false }));
-    e.n++; e.ips.add(a.ip);
-    if (now - Date.parse(a.t) <= 3600e3) e.hot = true;
+    const exact = a.lat != null && a.lon != null;
+    let lat = a.lat, lon = a.lon;
+    if (!exact) {
+      const c = CENTROIDS[a.cn];
+      if (!c) { none++; continue; }
+      [lat, lon] = c; approx++;
+    }
+    // ~50-km-Raster: nahe IPs (gleiches Rechenzentrum/Stadt) werden ein Punkt
+    const key = exact ? `${Math.round(lat * 2)},${Math.round(lon * 2)}` : `cc:${a.cn}`;
+    let c = map.get(key);
+    if (!c) map.set(key, (c = { sLat: 0, sLon: 0, n: 0, ips: new Map(), cns: new Map(), hot: false, approx: !exact }));
+    c.sLat += lat; c.sLon += lon; c.n++;
+    c.ips.set(a.ip, (c.ips.get(a.ip) || 0) + 1);
+    c.cns.set(a.cn, (c.cns.get(a.cn) || 0) + 1);
+    if (now - Date.parse(a.t) <= 3600e3) c.hot = true;
   }
-  const plotted = [], unplaced = [];
-  for (const [cn, e] of byCn) (CENTROIDS[cn] ? plotted : unplaced).push([cn, e]);
-  plotted.sort((a, b) => a[1].n - b[1].n); // große zuletzt = oben
-  const max = Math.max(1, ...plotted.map(([, e]) => e.n));
-  const top5 = new Set([...plotted].sort((a, b) => b[1].n - a[1].n).slice(0, 5).map(([cn]) => cn));
-  const home = d.home || { lat: 50.11, lon: 8.68, label: "HOME" };
+  const home = state.data.home || { lat: 50.11, lon: 8.68, label: "HOME" };
+  const clusters = [...map.values()].map((c) => {
+    const lat = c.sLat / c.n, lon = c.sLon / c.n;
+    const topIp = [...c.ips.entries()].sort((x, y) => y[1] - x[1])[0];
+    const cn = [...c.cns.entries()].sort((x, y) => y[1] - x[1])[0][0];
+    return { lat, lon, n: c.n, ipCount: c.ips.size, topIp, cn, hot: c.hot, approx: c.approx, km: distanceKm(home, { lat, lon }) };
+  });
+  return { clusters, approx, none, home };
+}
+function renderGlobe(alerts) {
+  const { clusters, approx, none, home } = clusterAlerts(alerts);
+  if (!globe) {
+    globe = new window.Globe($("globe"), {
+      onHover: (c, e) => showTip($("globe"), globeTip(c), e),
+      onLeave: hideTip,
+      onClick: (c) => setFilter({ country: state.f.country === c.cn ? "" : c.cn }),
+    });
+    globe.setSpin($("globe-spin").checked);
+  }
+  globe.setData({ clusters, home, selected: state.f.country });
+  const exact = alerts.length - approx - none;
+  const parts = [`${fmt(clusters.length)} Standorte`, `${fmt(exact)} Alerts per IP verortet`];
+  if (approx) parts.push(`${fmt(approx)} nur Landesmitte`);
+  if (none) parts.push(`${fmt(none)} ohne Ort`);
+  $("globe-note").textContent = `${parts.join(" · ")} · Ziehen = drehen · Klick = Länderfilter`;
 
-  for (const [cn, e] of plotted) {
-    const [lat, lon] = CENTROIDS[cn];
-    const { brg, km } = bearingDistance(home, lat, lon);
-    const dist = rr(km), x = dist * Math.sin(brg), y = -dist * Math.cos(brg);
-    const r = 4 + 11 * Math.sqrt(e.n / max);
-    const sel = state.f.country === cn;
-    const g = s("g", { class: "r-blip-g", tabindex: 0, role: "button", "aria-label": `${countryName(cn)}: ${e.n} Alerts, ${e.ips.size} IPs. Als Filter setzen` });
-    if (e.hot && !REDUCED_MOTION) g.append(s("circle", { class: "r-ping", cx: x, cy: y, r }));
-    g.append(s("circle", { class: "r-blip-hit", cx: x, cy: y, r: Math.max(12, r + 4) }));
-    g.append(s("circle", { class: `r-blip${e.hot ? " hot" : ""}${sel ? " sel" : ""}`, cx: x, cy: y, r }));
-    if (top5.has(cn) || sel) g.append(s("text", { class: "r-blip-label", x: x + r + 4, y: y + 3, text: cn }));
-    const toggle = () => setFilter({ country: state.f.country === cn ? "" : cn });
-    g.addEventListener("click", toggle);
-    g.addEventListener("keydown", (ev) => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); toggle(); } });
-    bindTip(g, () => tipLines(`${fmt(e.n)} Alerts`, `${flag(cn)} ${countryName(cn)}`, `${fmt(e.ips.size)} IPs · ca. ${fmt(Math.round(km / 100) * 100)} km${e.hot ? " · aktiv in der letzten Stunde" : ""}`));
-    svg.append(g);
-  }
-  svg.append(s("circle", { class: "r-home", r: 4 }), s("text", { class: "r-home-label", x: 7, y: 14, text: home.label }));
-  box.replaceChildren(svg);
-  const lost = unplaced.reduce((n, [, e]) => n + e.n, 0);
-  $("radar-note").textContent = `Abstand wurzelskaliert · Punktgröße = Alerts · leuchtend = aktiv in der letzten Stunde${lost ? ` · ${fmt(lost)} Alerts ohne Länderzuordnung` : ""}`;
+  const rows = [...clusters].sort((a, b) => b.n - a.n).slice(0, 40);
+  $("globe-table").replaceChildren(h("div", { class: "table-wrap" }, h("table", {},
+    h("thead", {}, h("tr", {}, ...["Land", "Koordinaten", "Entfernung", "IPs", "Alerts"].map((t, i) => h("th", { class: i > 1 ? "num" : null, text: t })))),
+    h("tbody", {}, rows.map((c) => h("tr", {},
+      h("td", { text: `${flag(c.cn)} ${countryName(c.cn)}` }),
+      h("td", { text: c.approx ? "Landesmitte" : `${c.lat.toFixed(1).replace(".", ",")}°, ${c.lon.toFixed(1).replace(".", ",")}°` }),
+      h("td", { class: "num", text: `${fmt(Math.round(c.km / 10) * 10)} km` }),
+      h("td", { class: "num", text: fmt(c.ipCount) }),
+      h("td", { class: "num", text: fmt(c.n) })))))));
+}
+function globeTip(c) {
+  const where = `${flag(c.cn)} ${countryName(c.cn)}${c.approx ? " · nur Landesmitte" : ` · ${c.lat.toFixed(1).replace(".", ",")}°, ${c.lon.toFixed(1).replace(".", ",")}°`}`;
+  const top = c.ipCount > 1 ? ` · aktivste: ${c.topIp[0]} (${fmt(c.topIp[1])}×)` : ` · ${c.topIp[0]}`;
+  return tipLines(`${fmt(c.n)} Alerts`, where, `${fmt(c.ipCount)} IP${c.ipCount === 1 ? "" : "s"}${top} · ${fmt(Math.round(c.km / 10) * 10)} km entfernt${c.hot ? " · aktiv in der letzten Stunde" : ""}`);
 }
 
 // --- Live-Feed
@@ -655,6 +652,9 @@ function init() {
     else if (e.key === "2") setRange("7d");
     else if (e.key === "3") setRange("30d");
   });
+  $("globe-home").addEventListener("click", () => globe?.centerOnHome());
+  $("globe-spin").addEventListener("change", (e) => { globe?.setSpin(e.target.checked); store.set("csd.spin", e.target.checked ? "1" : "0"); });
+  if (store.get("csd.spin") === "0" || REDUCED_MOTION) $("globe-spin").checked = false;
   let rTimer;
   addEventListener("resize", () => { clearTimeout(rTimer); rTimer = setTimeout(render, 120); });
   document.addEventListener("visibilitychange", () => {

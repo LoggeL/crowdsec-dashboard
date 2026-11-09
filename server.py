@@ -7,6 +7,7 @@ bleiben auf dem Server, die Oberfläche bekommt nur aufbereitete JSON-Daten.
 """
 import base64
 import hmac
+import ipaddress
 import json
 import os
 import random
@@ -44,9 +45,11 @@ DASH_PASSWORD = env("DASHBOARD_PASSWORD")
 DEMO = env_bool("DEMO")
 ALERT_LIMIT = int(env("ALERT_LIMIT", "5000"))
 CACHE_TTL = int(env("CACHE_TTL", "20"))
-HOME_LAT = float(env("HOME_LAT", "50.11"))   # Standort des Servers für das Radar (Default: Frankfurt)
+HOME_LAT = float(env("HOME_LAT", "50.11"))   # Standort des eigenen Servers auf dem Globus (Default: Frankfurt)
 HOME_LON = float(env("HOME_LON", "8.68"))
 HOME_LABEL = env("HOME_LABEL", "HOME")
+# Fallback-Geocoding für IPs ohne Koordinaten: "" (aus) oder "ipapi" (sendet IPs an ip-api.com!)
+GEO_FALLBACK = env("GEO_FALLBACK").lower()
 
 # Zeitraum -> (Stunden, Bucket-Größe in Sekunden für die Zeitachse)
 RANGES = {"24h": (24, 3600), "7d": (168, 4 * 3600), "30d": (720, 86400)}
@@ -58,6 +61,7 @@ CONTENT_TYPES = {
     ".js": "text/javascript; charset=utf-8",
     ".css": "text/css; charset=utf-8",
     ".svg": "image/svg+xml",
+    ".json": "application/json; charset=utf-8",
 }
 STATIC_FILES = {p.name: p for p in STATIC_DIR.iterdir() if p.suffix in CONTENT_TYPES} if STATIC_DIR.is_dir() else {}
 
@@ -168,6 +172,8 @@ def compact_alert(a):
         return None  # Community-/Blocklisten-Importe sind keine Angriffe auf diesen Server
     src = a.get("source") or {}
     first = decisions[0] if decisions else {}
+    lat, lon = src.get("latitude"), src.get("longitude")
+    has_geo = isinstance(lat, (int, float)) and isinstance(lon, (int, float)) and not (lat == 0 and lon == 0)
     return {
         "id": a.get("id"),
         "t": norm_time(a.get("start_at") or a.get("created_at")),
@@ -176,6 +182,9 @@ def compact_alert(a):
         "cn": (src.get("cn") or "").upper(),
         "as": src.get("as_name") or "",
         "asn": str(src.get("as_number") or ""),
+        "lat": round(lat, 3) if has_geo else None,
+        "lon": round(lon, 3) if has_geo else None,
+        "geo": "crowdsec" if has_geo else None,
         "scenario": a.get("scenario") or "",
         "events": a.get("events_count") or 0,
         "machine": a.get("machine_id") or "",
@@ -213,6 +222,49 @@ def summarize_decisions(decisions):
     }
 
 
+# --------------------------------------------------------------------------- geocoding fallback
+
+_geo_cache = {}  # ip -> (lat, lon) | None
+
+
+def _is_public(ip):
+    try:
+        return ipaddress.ip_address(ip).is_global
+    except ValueError:
+        return False
+
+
+def geo_fill(alerts, warnings):
+    """Ergänzt fehlende Koordinaten über ip-api.com (nur wenn GEO_FALLBACK=ipapi)."""
+    if GEO_FALLBACK != "ipapi":
+        return
+    if len(_geo_cache) > 50000:
+        _geo_cache.clear()
+    missing = []
+    for a in alerts:
+        ip = a["ip"]
+        if a["lat"] is None and ip not in _geo_cache and ip not in missing and _is_public(ip):
+            missing.append(ip)
+    for i in range(0, min(len(missing), 300), 100):  # max. 3 Batch-Anfragen pro Abruf (Limit: 15/min)
+        chunk = missing[i:i + 100]
+        req = urllib.request.Request(
+            "http://ip-api.com/batch?fields=status,query,lat,lon", data=json.dumps(chunk).encode(),
+            headers={"Content-Type": "application/json", "User-Agent": "crowdsec-dashboard/1.0"}, method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                results = json.loads(resp.read())
+        except (urllib.error.URLError, TimeoutError, OSError, ValueError) as e:
+            warnings.append(f"Geocoding-Fallback (ip-api.com) fehlgeschlagen: {getattr(e, 'reason', e)}")
+            break
+        for r in results:
+            ok = r.get("status") == "success"
+            _geo_cache[r.get("query")] = (r["lat"], r["lon"]) if ok else None
+    for a in alerts:
+        hit = _geo_cache.get(a["ip"]) if a["lat"] is None else None
+        if hit:
+            a["lat"], a["lon"], a["geo"] = round(hit[0], 3), round(hit[1], 3), "ipapi"
+
+
 # --------------------------------------------------------------------------- demo data
 
 DEMO_SCENARIOS = [
@@ -221,18 +273,27 @@ DEMO_SCENARIOS = [
     ("crowdsecurity/http-admin-interface-probing", 5), ("crowdsecurity/http-wordpress_scan", 4),
     ("crowdsecurity/http-cve-2021-41773", 2), ("crowdsecurity/nginx-req-limit-exceeded", 2),
 ]
-DEMO_NETWORKS = [
-    ("CN", "4134", "CHINANET-BACKBONE", 18), ("US", "14061", "DIGITALOCEAN-ASN", 14), ("NL", "14061", "DIGITALOCEAN-ASN", 6),
-    ("RU", "49505", "OOO Network of data-centers Selectel", 8), ("DE", "24940", "Hetzner Online GmbH", 7),
-    ("US", "16509", "AMAZON-02", 9), ("VN", "45899", "VNPT Corp", 6), ("BR", "28573", "Claro NXT Telecomunicacoes", 5),
-    ("IN", "9829", "National Internet Backbone", 5), ("KR", "4766", "Korea Telecom", 4), ("SG", "135377", "UCLOUD INFORMATION", 4),
-    ("FR", "16276", "OVH SAS", 4), ("GB", "14061", "DIGITALOCEAN-ASN", 2), ("ID", "7713", "PT Telekomunikasi Indonesia", 3),
+DEMO_NETWORKS = [  # (Land, ASN, Netzname, Gewicht, Standorte)
+    ("CN", "4134", "CHINANET-BACKBONE", 18, [(39.9, 116.4), (31.2, 121.5), (23.1, 113.3), (30.6, 104.1)]),
+    ("US", "14061", "DIGITALOCEAN-ASN", 14, [(40.7, -74.0), (37.8, -122.4)]),
+    ("NL", "14061", "DIGITALOCEAN-ASN", 6, [(52.4, 4.9)]),
+    ("RU", "49505", "OOO Network of data-centers Selectel", 8, [(55.8, 37.6), (59.9, 30.3)]),
+    ("DE", "24940", "Hetzner Online GmbH", 7, [(50.5, 12.4), (49.5, 11.1)]),
+    ("US", "16509", "AMAZON-02", 9, [(39.0, -77.5), (45.8, -119.7), (40.0, -83.0)]),
+    ("VN", "45899", "VNPT Corp", 6, [(21.0, 105.8), (10.8, 106.7)]),
+    ("BR", "28573", "Claro NXT Telecomunicacoes", 5, [(-23.5, -46.6), (-22.9, -43.2)]),
+    ("IN", "9829", "National Internet Backbone", 5, [(19.1, 72.9), (28.6, 77.2), (13.1, 80.3)]),
+    ("KR", "4766", "Korea Telecom", 4, [(37.6, 127.0), (35.2, 129.1)]),
+    ("SG", "135377", "UCLOUD INFORMATION", 4, [(1.35, 103.8)]),
+    ("FR", "16276", "OVH SAS", 4, [(50.7, 3.2), (51.0, 2.1)]),
+    ("GB", "14061", "DIGITALOCEAN-ASN", 2, [(51.5, -0.1)]),
+    ("ID", "7713", "PT Telekomunikasi Indonesia", 3, [(-6.2, 106.8), (-7.3, 112.7)]),
 ]
 _DEMO_PREFIXES = ("192.0.2.", "198.51.100.", "203.0.113.")  # Dokumentations-Netze, keine echten Angreifer
 
 
-def _weighted(rng, items):
-    return rng.choices(items, weights=[i[-1] for i in items])[0]
+def _weighted(rng, items, w=-1):
+    return rng.choices(items, weights=[i[w] for i in items])[0]
 
 
 def demo_payload(range_key):
@@ -241,8 +302,11 @@ def demo_payload(range_key):
     now = datetime.now(timezone.utc)
     pool = []
     for i in range(420):
-        cn, asn, as_name, _ = _weighted(rng, DEMO_NETWORKS)
-        pool.append((f"{_DEMO_PREFIXES[i % 3]}{i // 3 + 1}", cn, asn, as_name))
+        cn, asn, as_name, _, cities = _weighted(rng, DEMO_NETWORKS, 3)
+        lat, lon = rng.choice(cities)
+        lat, lon = round(lat + rng.uniform(-0.4, 0.4), 3), round(lon + rng.uniform(-0.4, 0.4), 3)
+        geo = rng.random() > 0.04  # ein paar ohne Koordinaten -> Fallback Landesmitte
+        pool.append((f"{_DEMO_PREFIXES[i % 3]}{i // 3 + 1}", cn, asn, as_name, lat if geo else None, lon if geo else None))
     weights = [1 / (i + 1) ** 0.8 for i in range(len(pool))]
 
     alerts = []
@@ -253,7 +317,7 @@ def demo_payload(range_key):
         if 30 <= h <= 33 or 140 <= h <= 142:  # zwei Angriffswellen
             rate *= 4
         for _ in range(int(rate)):
-            ip, cn, asn, as_name = rng.choices(pool, weights=weights)[0]
+            ip, cn, asn, as_name, lat, lon = rng.choices(pool, weights=weights)[0]
             scenario = _weighted(rng, DEMO_SCENARIOS)[0]
             ts = t_hour - timedelta(seconds=rng.randint(0, 3599))
             age = (now - ts).total_seconds()
@@ -261,6 +325,7 @@ def demo_payload(range_key):
                 {
                     "id": len(alerts) + 1, "t": ts.isoformat(timespec="milliseconds").replace("+00:00", "Z"),
                     "ip": ip, "scope": "Ip", "cn": cn, "as": as_name, "asn": asn, "scenario": scenario,
+                    "lat": lat, "lon": lon, "geo": "crowdsec" if lat is not None else None,
                     "events": rng.randint(5, 60) if "bf" in scenario else rng.randint(3, 25),
                     "machine": rng.choice(["web-01", "web-01", "mail-01"]), "sim": False,
                     "decision": "ban", "remaining": int(4 * 3600 - age),
@@ -313,6 +378,7 @@ def live_payload(range_key):
             truncated = len(raw) >= ALERT_LIMIT
             alerts = [c for c in (compact_alert(a) for a in raw) if c]
             alerts.sort(key=lambda a: a["t"], reverse=True)
+            geo_fill(alerts, warnings)
         except LapiError as e:
             warnings.append(f"Alerts konnten nicht geladen werden – {e}")
             errors += 1

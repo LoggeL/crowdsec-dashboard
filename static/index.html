@@ -91,12 +91,17 @@
       </section>
 
       <section class="grid-main">
-        <article class="panel radar-panel">
+        <article class="panel globe-panel">
           <header class="panel-head">
-            <h2 class="panel-title">RADAR <span class="dim">// Herkunft nach Richtung &amp; Distanz</span></h2>
+            <h2 class="panel-title">GLOBUS <span class="dim">// Herkunft per IP-Geolocation</span></h2>
+            <div class="globe-ctrl">
+              <button type="button" class="btn small" id="globe-home" title="Auf den eigenen Server ausrichten (H)">◎ HOME</button>
+              <label class="switch" title="Automatische Drehung"><input type="checkbox" id="globe-spin" checked><span>ROT</span></label>
+            </div>
           </header>
-          <div class="radar" id="radar"></div>
-          <p class="note" id="radar-note"></p>
+          <div class="globe" id="globe"></div>
+          <p class="note" id="globe-note"></p>
+          <details class="tableview"><summary>Standorte als Tabelle anzeigen</summary><div id="globe-table"></div></details>
         </article>
 
         <div class="stack">
@@ -176,6 +181,7 @@
 
   <div class="crt-overlay" aria-hidden="true"></div>
   <div id="tooltip" class="tooltip" role="tooltip" hidden></div>
+  <script src="globe.js" defer></script>
   <script src="app.js" defer></script>
 </body>
 </html>
