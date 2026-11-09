@@ -1,0 +1,29 @@
+# Variante A (Standard): CrowdSec läuft direkt auf dem Host, LAPI auf 127.0.0.1:8080.
+# Das Dashboard nutzt das Host-Netz und lauscht nur lokal auf 127.0.0.1:3000 –
+# davor gehört ein Reverse-Proxy mit TLS (siehe README).
+services:
+  crowdsec-dashboard:
+    build: .
+    image: crowdsec-dashboard:latest
+    container_name: crowdsec-dashboard
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      LISTEN_HOST: 127.0.0.1
+    network_mode: host
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+
+# Variante B: CrowdSec läuft selbst als Container (z. B. "crowdsec" im Netz "crowdsec_default").
+# Dann network_mode oben entfernen, LAPI_URL=http://crowdsec:8080 setzen und stattdessen:
+#
+#    networks: [crowdsec]
+#    ports: ["127.0.0.1:3000:3000"]
+#    environment:
+#      LISTEN_HOST: 0.0.0.0
+#
+# networks:
+#   crowdsec:
+#     external: true
+#     name: crowdsec_default

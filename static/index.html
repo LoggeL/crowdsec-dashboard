@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>CrowdSec Defense Grid</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body class="crt">
+  <!-- Boot-Sequenz (überspringbar, entfällt bei reduzierter Bewegung) -->
+  <div id="boot" class="boot" hidden aria-hidden="true">
+    <pre id="boot-log" class="boot-log"></pre>
+    <p class="boot-skip">[ Klick oder Taste zum Überspringen ]</p>
+  </div>
+
+  <div class="screen">
+    <header class="topbar">
+      <div class="brand">
+        <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><path d="M16 2 4 7v8c0 7.5 5.1 13.4 12 15 6.9-1.6 12-7.5 12-15V7L16 2Z"/><path class="brand-cut" d="M10 16h12M16 10v12"/></svg>
+        <div>
+          <h1>CROWDSEC <span class="dim">//</span> DEFENSE GRID</h1>
+          <p class="prompt-line"><span class="dim">root@</span><span id="host">lapi</span><span class="dim">:~#</span> watch --threats<span class="cursor" aria-hidden="true">█</span></p>
+        </div>
+      </div>
+      <div class="threat" id="threat" role="status" aria-live="polite">
+        <span class="threat-label">THREATCON</span>
+        <span class="threat-level" id="threat-level">–</span>
+        <span class="threat-text" id="threat-text">initialisiere</span>
+        <span class="threat-bars" id="threat-bars" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span>
+      </div>
+      <div class="sys">
+        <div class="clock" id="clock">--:--:--</div>
+        <div class="link"><span class="led" id="led"></span><span id="status-text">verbinde…</span></div>
+      </div>
+    </header>
+
+    <div id="banner" class="banner" role="alert" hidden></div>
+
+    <nav class="cmdbar" aria-label="Filter">
+      <div class="seg" role="radiogroup" aria-label="Zeitraum" id="range">
+        <button type="button" role="radio" data-range="24h">24H</button>
+        <button type="button" role="radio" data-range="7d">7T</button>
+        <button type="button" role="radio" data-range="30d">30T</button>
+      </div>
+      <label class="grep">
+        <span class="grep-prompt" aria-hidden="true">grep&gt;</span>
+        <input type="search" id="f-search" placeholder="IP, Netz, Maschine …" autocomplete="off" spellcheck="false" aria-label="Suche nach IP, Netz oder Maschine">
+      </label>
+      <label class="sel"><span class="sr-only">Szenario</span>
+        <select id="f-scenario"><option value="">* alle Szenarien</option></select>
+      </label>
+      <label class="sel"><span class="sr-only">Land</span>
+        <select id="f-country"><option value="">* alle Länder</option></select>
+      </label>
+      <button type="button" class="btn ghost" id="f-reset" hidden>[ESC] Filter löschen</button>
+      <span class="spacer"></span>
+      <button type="button" class="btn" id="refresh" title="Aktualisieren (R)">↻ SYNC</button>
+      <label class="switch" title="Automatisch alle 60 Sekunden aktualisieren"><input type="checkbox" id="auto" checked><span>AUTO 60s</span></label>
+      <label class="switch" title="Röhrenmonitor-Effekte (Scanlines, Flimmern)"><input type="checkbox" id="crt-toggle" checked><span>CRT</span></label>
+    </nav>
+
+    <main id="main">
+      <section class="kpis" aria-label="Kennzahlen">
+        <article class="panel kpi hero">
+          <h2 class="panel-title">ALERTS <span class="dim" id="k-range">/ 24H</span></h2>
+          <div class="kpi-value" id="k-alerts">–</div>
+          <div class="kpi-sub" id="k-alerts-sub">&nbsp;</div>
+        </article>
+        <article class="panel kpi">
+          <h2 class="panel-title">ANGREIFER-IPS</h2>
+          <div class="kpi-value" id="k-ips">–</div>
+          <div class="kpi-sub" id="k-ips-sub">&nbsp;</div>
+        </article>
+        <article class="panel kpi">
+          <h2 class="panel-title">AKTIVE SPERREN</h2>
+          <div class="kpi-value" id="k-bans">–</div>
+          <div class="kpi-sub">lokal erkannt + manuell</div>
+        </article>
+        <article class="panel kpi">
+          <h2 class="panel-title">COMMUNITY-SCHILD</h2>
+          <div class="kpi-value" id="k-capi">–</div>
+          <div class="kpi-sub">IPs aus CAPI + Blocklisten</div>
+        </article>
+        <article class="panel kpi">
+          <h2 class="panel-title">HERKUNFTSLÄNDER</h2>
+          <div class="kpi-value" id="k-countries">–</div>
+          <div class="kpi-sub" id="k-countries-sub">&nbsp;</div>
+        </article>
+      </section>
+
+      <section class="grid-main">
+        <article class="panel radar-panel">
+          <header class="panel-head">
+            <h2 class="panel-title">RADAR <span class="dim">// Herkunft nach Richtung &amp; Distanz</span></h2>
+          </header>
+          <div class="radar" id="radar"></div>
+          <p class="note" id="radar-note"></p>
+        </article>
+
+        <div class="stack">
+          <article class="panel">
+            <header class="panel-head">
+              <h2 class="panel-title">ALERTS ÜBER ZEIT <span class="dim" id="bucket-hint">// pro Stunde</span></h2>
+            </header>
+            <div class="chart" id="timeline"></div>
+            <details class="tableview"><summary>als Tabelle anzeigen</summary><div id="timeline-table"></div></details>
+          </article>
+
+          <article class="panel log-panel">
+            <header class="panel-head">
+              <h2 class="panel-title">LIVE-FEED <span class="dim">// tail -f alerts.log</span></h2>
+              <span class="pill" id="feed-count"></span>
+            </header>
+            <ol class="log" id="log" aria-label="Neueste Alerts"></ol>
+          </article>
+        </div>
+      </section>
+
+      <section class="grid-3">
+        <article class="panel">
+          <header class="panel-head"><h2 class="panel-title">TOP SZENARIEN</h2><span class="hint">Klick = Filter</span></header>
+          <div class="bars" id="top-scenarios"></div>
+        </article>
+        <article class="panel">
+          <header class="panel-head"><h2 class="panel-title">TOP LÄNDER</h2><span class="hint">Klick = Filter</span></header>
+          <div class="bars" id="top-countries"></div>
+        </article>
+        <article class="panel">
+          <header class="panel-head"><h2 class="panel-title">TOP NETZE (AS)</h2><span class="hint">Klick = Suche</span></header>
+          <div class="bars" id="top-as"></div>
+        </article>
+      </section>
+
+      <section class="panel shield">
+        <header class="panel-head">
+          <h2 class="panel-title">SCHUTZSCHILD <span class="dim">// aktive Sperren nach Herkunft</span></h2>
+          <span class="pill" id="dec-types"></span>
+        </header>
+        <div class="segbar" id="dec-origin" role="img"></div>
+        <ul class="legend" id="dec-legend"></ul>
+      </section>
+
+      <section class="panel tables">
+        <div class="tabs" role="tablist" aria-label="Tabellen">
+          <button type="button" role="tab" id="tab-alerts" aria-controls="pane-alerts" aria-selected="true">ALERTS <span class="pill" id="alerts-count"></span></button>
+          <button type="button" role="tab" id="tab-decisions" aria-controls="pane-decisions" aria-selected="false">AKTIVE SPERREN <span class="pill" id="decisions-count"></span></button>
+        </div>
+        <div class="tabpane" id="pane-alerts" role="tabpanel" aria-labelledby="tab-alerts">
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Zeit</th><th>Quelle</th><th>Land</th><th>Netz</th><th>Szenario</th><th class="num">Events</th><th>Aktion</th></tr></thead>
+              <tbody id="alerts-body"></tbody>
+            </table>
+          </div>
+          <p class="note" id="alerts-more"></p>
+        </div>
+        <div class="tabpane" id="pane-decisions" role="tabpanel" aria-labelledby="tab-decisions" hidden>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Ziel</th><th>Land</th><th>Typ</th><th>Herkunft</th><th>Grund</th><th class="num">Restlaufzeit</th></tr></thead>
+              <tbody id="decisions-body"></tbody>
+            </table>
+          </div>
+          <p class="note" id="decisions-more"></p>
+        </div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <span id="source">Quelle: –</span>
+      <span class="keys"><kbd>/</kbd> suchen · <kbd>R</kbd> sync · <kbd>1</kbd><kbd>2</kbd><kbd>3</kbd> Zeitraum · <kbd>Esc</kbd> Filter löschen</span>
+    </footer>
+  </div>
+
+  <div class="crt-overlay" aria-hidden="true"></div>
+  <div id="tooltip" class="tooltip" role="tooltip" hidden></div>
+  <script src="app.js" defer></script>
+</body>
+</html>
